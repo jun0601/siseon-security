@@ -11,13 +11,13 @@
 |------|------|
 | 프로젝트명 | StockOps ERP - 보안/감사 모니터링 파트 |
 | 팀명 | 시선 (SISEON) |
-| 담당 | 팀원C - 로그/모니터링 |
+| 담당 | 이준형 - 로그/모니터링 & 보안 파트 |
 | 클라우드 | AWS (ap-northeast-2) |
 | IaC | Terraform |
 
 ---
 
-## 🏗️ 아키텍처
+## 🏗️ 파이프라인 아키텍처
 
 ```
 AWS 콘솔 이벤트 발생 (로그인 / 리소스 삭제)
@@ -64,6 +64,35 @@ AWS 콘솔 이벤트 발생 (로그인 / 리소스 삭제)
 
 ---
 
+## 🔒 감지 이벤트 목록
+
+### 삭제 작업 (`aws-alerts`)
+
+| 패턴 | 예시 이벤트 |
+|------|------------|
+| `Delete*` | DeleteBucket, DeleteUser, DeleteRole, DeleteAlarms, DeleteTrail 등 |
+| `Remove*` | RemoveUserFromGroup, RemoveRoleFromInstanceProfile 등 |
+| `Terminate*` | TerminateInstances |
+
+### 로그인 (`aws-logins`)
+
+| 이벤트 | 설명 |
+|--------|------|
+| `ConsoleLogin` | AWS 콘솔 로그인 전체 감지 (성공/실패 모두) |
+
+---
+
+## 📦 S3 로그 장기 보관 정책
+
+| 기간 | 스토리지 클래스 | 비용 |
+|------|----------------|------|
+| 0 ~ 30일 | S3 Standard | 일반 |
+| 30 ~ 90일 | Standard-IA | 저감 |
+| 90 ~ 365일 | Glacier | 최저 |
+| 365일 이후 | 삭제 | - |
+
+---
+
 ## 📁 디렉토리 구조
 
 ```
@@ -73,6 +102,10 @@ siseon-security/
 ├── outputs.tf                     # 출력값
 ├── providers.tf                   # AWS Provider 설정
 ├── terraform.tfvars               # 민감 변수 (git 제외)
+├── .gitignore
+├── README.md                      # 프로젝트 개요
+├── SECURITY.md                    # 보안 설계 문서
+├── TROUBLESHOOTING.md             # 트러블슈팅 기록
 └── modules/
     ├── cloudtrail/                # CloudTrail + S3 Lifecycle + CW 연동
     │   ├── main.tf
@@ -101,6 +134,7 @@ siseon-security/
 | 클라우드 | AWS (CloudTrail, CloudWatch, Lambda, S3, IAM) |
 | 런타임 | Python 3.12 |
 | 알림 | Microsoft Teams + Power Automate |
+| 인증 | AWS IAM Identity Center (SSO) |
 
 ---
 
@@ -108,17 +142,17 @@ siseon-security/
 
 ### 사전 요구사항
 - Terraform >= 1.0
-- AWS CLI + SSO 설정 (`aws configure sso`)
+- AWS CLI + SSO 설정 (`aws configure sso --profile siseon`)
 - Microsoft Teams + Power Automate 웹훅 URL
 
 ### 배포
 
 ```bash
-# 1. 초기화
-terraform init
+# 1. SSO 로그인
+aws sso login --profile siseon
 
-# 2. 변수 파일 생성 후 웹훅 URL 입력
-cp terraform.tfvars.example terraform.tfvars
+# 2. 초기화
+terraform init
 
 # 3. 플랜 확인
 terraform plan
@@ -135,32 +169,13 @@ terraform destroy
 
 ---
 
-## 🔒 감지 이벤트 목록
+## 🔗 연관 레포지토리
 
-### 삭제 작업 (`aws-alerts`)
-
-| 패턴 | 예시 이벤트 |
-|------|------------|
-| `Delete*` | DeleteBucket, DeleteUser, DeleteRole, DeleteAlarms 등 |
-| `Remove*` | RemoveUserFromGroup, RemoveRoleFromInstanceProfile 등 |
-| `Terminate*` | TerminateInstances |
-
-### 로그인 (`aws-logins`)
-
-| 이벤트 | 설명 |
-|--------|------|
-| `ConsoleLogin` | AWS 콘솔 로그인 전체 감지 |
-
----
-
-## 📦 S3 로그 장기 보관 정책
-
-| 기간 | 스토리지 클래스 |
-|------|----------------|
-| 0 ~ 30일 | S3 Standard |
-| 30 ~ 90일 | Standard-IA |
-| 90 ~ 365일 | Glacier |
-| 365일 이후 | 삭제 |
+| 레포 | 설명 |
+|------|------|
+| [siseon-security](https://github.com/jun0601/siseon-security) | CloudTrail 보안/감사 모니터링 (현재) |
+| [siseon-infra-monitoring](https://github.com/jun0601/siseon-infra-monitoring) | EKS 인프라 모니터링 |
+| Stockops-Infra | 팀 메인 인프라 (VPC, EKS, ALB, RDS) |
 
 ---
 
