@@ -37,6 +37,7 @@
                         │      AWS Lambda (Python)      │
                         │  • gzip 압축 해제             │
                         │  • CloudTrail 로그 파싱       │
+                        │  • AWS 서비스 이벤트 필터링   │
                         │  • 사용자/IP/리전/시간 추출   │
                         │  • KST 시간 변환              │
                         └──────────┬───────────────────┘
@@ -112,18 +113,48 @@ def lambda_handler(event, context):
         send_to_teams(payload)
 ```
 
+### AWS 서비스 이벤트 필터링
+
+Terraform destroy 또는 AWS 내부 자동화 작업 시 `AutoScaling`, `EKS`, `ElasticLoadBalancing` 등
+AWS 서비스가 자동으로 리소스를 삭제하는 이벤트가 다수 발생합니다.
+이러한 이벤트는 사람이 한 작업이 아니므로 필터링하여 알림 노이즈를 줄입니다.
+
+```python
+# AWS 내부 서비스 IP 목록 (사람이 한 작업 아님 → 스킵)
+AWS_SERVICE_IPS = (
+    "amazonaws.com",
+    "elasticloadbalancing.amazonaws.com",
+    "eks.amazonaws.com",
+    "autoscaling.amazonaws.com",
+    "rds.amazonaws.com",
+    "eks-nodegroup.amazonaws.com",
+)
+
+# sourceIPAddress가 AWS 서비스면 스킵
+if any(source_ip.endswith(svc) for svc in AWS_SERVICE_IPS):
+    continue
+```
+
 ### IAM Identity Center 사용자 파싱
 
 IAM Identity Center(SSO) 계정은 `userIdentity.userName` 필드가 없습니다.
 대신 `arn` 필드에서 세션 이름(사용자명)을 추출합니다.
+SDK 세션 이름(`aws-go-sdk-...`)인 경우 `sessionIssuer.userName` 으로 대체합니다.
 
 ```python
-# IAM Identity Center 사용자 ARN 예시
-# arn:aws:sts::448768137813:assumed-role/AWSReservedSSO_.../jh.lee
+def parse_username(user_identity):
+    user_type = user_identity.get("type", "")
 
-username = user_identity.get("userName") \
-           or user_identity.get("arn", "Unknown").split("/")[-1]
-# → "jh.lee"
+    if user_type == "AssumedRole":
+        on_behalf_of = user_identity.get("onBehalfOf")
+        if on_behalf_of:
+            arn = user_identity.get("arn", "")
+            username = arn.split("/")[-1]
+            # SDK 세션이름 패턴이면 sessionIssuer에서 가져오기
+            if username.startswith("aws-") or username.isdigit():
+                session_issuer = user_identity.get("sessionContext", {}).get("sessionIssuer", {})
+                username = session_issuer.get("userName", "Unknown")
+            return username  # → "jh.lee"
 ```
 
 ### 웹훅 메시지 포맷
@@ -140,6 +171,59 @@ message = (
     f"🔎 결과: {result}<br>"
     f"⏰ 시간: {event_time_kst}"
 )
+```
+
+---
+
+## 🗄️ Terraform Remote Backend (S3)
+
+### 설계 목적
+
+로컬에 tfstate 파일을 두면 팀원 간 상태 충돌, 민감 정보 노출, PC 분실 시 상태 손실 등의 문제가 발생합니다.
+S3 Remote Backend를 통해 이를 해결합니다.
+
+| 목적 | 설명 |
+|------|------|
+| 팀 협업 | tfstate 중앙 관리로 상태 충돌 방지 |
+| 보안 | 민감 정보(DB 비밀번호 등) GitHub 노출 차단 |
+| 가용성 | 어느 PC에서든 동일한 상태로 작업 가능 |
+| 복구 | S3 버저닝으로 tfstate 변경 이력 관리 |
+
+### 구성
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket  = "siseon-terraform-state"
+    key     = "security/terraform.tfstate"
+    region  = "ap-northeast-2"
+    profile = "siseon"
+  }
+}
+```
+
+### 파트별 key 구성
+
+| 파트 | key |
+|------|-----|
+| siseon-security | `security/terraform.tfstate` |
+| siseon-infra | `infra/terraform.tfstate` |
+| siseon-infra-monitoring | `monitoring/terraform.tfstate` |
+
+### 초기 설정 방법
+
+```bash
+# S3 버킷 생성
+aws s3 mb s3://siseon-terraform-state --region ap-northeast-2 --profile siseon
+
+# S3 버저닝 활성화
+aws s3api put-bucket-versioning \
+  --bucket siseon-terraform-state \
+  --versioning-configuration Status=Enabled \
+  --profile siseon
+
+# providers.tf에 backend 블록 추가 후
+terraform init -migrate-state  # 로컬 tfstate → S3 자동 이관
 ```
 
 ---
