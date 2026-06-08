@@ -12,7 +12,7 @@
 | 프로젝트명 | StockOps ERP - 보안/감사 모니터링 파트 |
 | 팀명 | 시선 (SISEON) |
 | 담당 | 이준형 - 로그/모니터링 & 보안 파트 |
-| 클라우드 | AWS (ap-northeast-2) |
+| 클라우드 | AWS (ap-northeast-2) + Azure (Korea Central) |
 | IaC | Terraform |
 
 ---
@@ -49,6 +49,16 @@ AWS Budgets (비용 모니터링)
    Power Automate 웹훅 POST
             ↓
   Microsoft Teams 💸aws-billing 채널
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+S3 (CloudTrail 로그)
+            ↓
+  Lambda (매일 KST 02:00, EventBridge)
+  (오늘 날짜 기준 파일 동기화)
+            ↓
+  Azure Blob Storage
+  (siseonstorage/cloudtrail-backup)
 ```
 
 ---
@@ -112,6 +122,34 @@ AWS Budgets (비용 모니터링)
 
 ---
 
+## 🔄 S3 → Azure Blob 동기화
+
+### 목적
+AWS 장애 시에도 CloudTrail 보안 감사 로그를 Azure에서 확인할 수 있도록
+매일 새벽 S3 로그를 Azure Blob Storage에 자동 동기화합니다.
+
+### 동기화 구성
+
+| 항목 | 값 |
+|------|-----|
+| 소스 | S3 `aws-cloudtrail-logs-448768137813-05d6a32b` |
+| 소스 경로 | `AWSLogs/448768137813/CloudTrail/ap-northeast-2/` |
+| 대상 | Azure Blob `siseonstorage/cloudtrail-backup` |
+| 실행 주기 | 매일 KST 02:00 (EventBridge cron) |
+| Lambda | `siseon-lambda-s3-to-azure` |
+
+### Azure Blob Storage
+
+| 항목 | 값 |
+|------|-----|
+| 스토리지 계정 | siseonstorage |
+| 리소스 그룹 | siseon-rg |
+| 리전 | Korea Central |
+| 컨테이너 | cloudtrail-backup (보안 감사 로그) |
+| 컨테이너 | db-backup (RDS 스냅샷, 김시온 파트) |
+
+---
+
 ## 📦 S3 로그 장기 보관 정책
 
 | 기간 | 스토리지 클래스 | 비용 |
@@ -148,7 +186,8 @@ siseon-security/
     │   └── functions/
     │       ├── login_alert.py     # 로그인 감지 Lambda
     │       ├── delete_alert.py    # 삭제 감지 Lambda
-    │       └── billing_alert.py   # 비용 경보 Lambda
+    │       ├── billing_alert.py   # 비용 경보 Lambda
+    │       └── s3_to_azure.py     # S3 → Azure Blob 동기화 Lambda
     ├── cloudwatch/                # Metric Filter + Alarm
     │   ├── main.tf
     │   ├── variables.tf
@@ -167,6 +206,7 @@ siseon-security/
 |------|------|
 | IaC | Terraform >= 1.0 |
 | 클라우드 | AWS (CloudTrail, CloudWatch, Lambda, S3, IAM, Budgets) |
+| 백업 | Azure Blob Storage (Korea Central) |
 | 런타임 | Python 3.12 |
 | 알림 | Microsoft Teams + Power Automate |
 | 인증 | AWS IAM Identity Center (SSO) |
@@ -180,9 +220,7 @@ siseon-security/
 - Terraform >= 1.0
 - AWS CLI + SSO 설정 (`aws configure sso --profile siseon`)
 - Microsoft Teams + Power Automate 웹훅 URL 3개
-  - `aws-logins` 채널용
-  - `aws-alerts` 채널용
-  - `aws-billing` 채널용
+- Azure Blob Storage 연결 문자열
 
 ### 배포
 
@@ -220,7 +258,7 @@ terraform destroy
 
 ## ⚠️ 주의사항
 
-- `terraform.tfvars` 는 웹훅 URL 포함으로 **절대 커밋 금지** (`.gitignore` 처리됨)
+- `terraform.tfvars` 는 웹훅 URL + Azure 연결 문자열 포함으로 **절대 커밋 금지** (`.gitignore` 처리됨)
 - Power Automate 웹훅 URL 변경 시 `terraform.tfvars` 수정 후 `terraform apply` 재실행
 - AWS CLI SSO 토큰 만료 시 `aws sso login --profile siseon` 으로 재로그인 필요
 - S3 backend 최초 설정 시 `terraform init -migrate-state` 로 로컬 tfstate 이관 필요

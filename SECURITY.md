@@ -25,17 +25,17 @@
 │  30d → IA        │    │  보존: 90일                   │
 │  90d → Glacier   │    └──────────┬───────────────────┘
 │  365d → 삭제      │               ↓
-└──────────────────┘    ┌──────────────────────────────┐
-                        │  Subscription Filter          │
-                        │  (이벤트 패턴 실시간 매칭)      │
-                        │  • ConsoleLogin               │
-                        │  • Delete* / Remove* /        │
-                        │    Terminate*                 │
-                        └──────────┬───────────────────┘
-                                   ↓
-                        ┌──────────────────────────────┐
-                        │      AWS Lambda (Python)      │
-                        │  • gzip 압축 해제             │
+│        ↓          │    ┌──────────────────────────────┐
+│  Lambda (매일)    │    │  Subscription Filter          │
+│  KST 02:00       │    │  (이벤트 패턴 실시간 매칭)      │
+└────────┬─────────┘    │  • ConsoleLogin               │
+         ↓              │  • Delete* / Remove* /        │
+┌──────────────────┐    │    Terminate*                 │
+│  Azure Blob      │    └──────────┬───────────────────┘
+│  cloudtrail-     │               ↓
+│  backup          │    ┌──────────────────────────────┐
+│  (재해복구 백업)  │    │      AWS Lambda (Python)      │
+└──────────────────┘    │  • gzip 압축 해제             │
                         │  • CloudTrail 로그 파싱       │
                         │  • AWS 서비스 이벤트 필터링   │
                         │  • 사용자/IP/리전/시간 추출   │
@@ -88,6 +88,69 @@
 | 상세 정보 | Alarm 메타데이터만 | CloudTrail 원문 파싱 가능 |
 | 실시간성 | 5분 집계 후 | 즉시 (수초 내) |
 | 유연성 | 제한적 | 커스텀 파싱 가능 |
+
+---
+
+## ☁️ S3 → Azure Blob 동기화 설계
+
+### 목적
+
+AWS 전체 장애 시에도 보안 감사 로그를 확인할 수 있도록
+CloudTrail 로그를 Azure Blob Storage에 이중 백업합니다.
+보안 감사는 장애 상황에서도 중단되면 안 되기 때문입니다.
+
+```
+S3 (CloudTrail 로그 원본)
+        ↓
+Lambda (매일 KST 02:00 EventBridge 트리거)
+  • 오늘 날짜 기준 S3 파일 목록 조회
+  • S3 GetObject → Azure Blob REST API PUT
+        ↓
+Azure Blob Storage
+siseonstorage/cloudtrail-backup/
+AWSLogs/448768137813/CloudTrail/ap-northeast-2/YYYY/MM/DD/
+```
+
+### 동기화 구성
+
+| 항목 | 값 |
+|------|-----|
+| 소스 버킷 | `aws-cloudtrail-logs-448768137813-05d6a32b` |
+| 소스 경로 | `AWSLogs/448768137813/CloudTrail/ap-northeast-2/` |
+| 대상 스토리지 | `siseonstorage` (Azure Blob, Korea Central) |
+| 대상 컨테이너 | `cloudtrail-backup` |
+| 실행 주기 | 매일 KST 02:00 (`cron(0 17 * * ? *)`) |
+| Lambda 함수 | `siseon-lambda-s3-to-azure` |
+
+### Lambda 핵심 로직
+
+```python
+def lambda_handler(event, context):
+    s3 = boto3.client("s3")
+    today = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    prefix = f"{SOURCE_PREFIX}{today}/"
+
+    response = s3.list_objects_v2(Bucket=SOURCE_BUCKET, Prefix=prefix)
+
+    for obj in response["Contents"]:
+        file_content = s3.get_object(
+            Bucket=SOURCE_BUCKET, Key=obj["Key"]
+        )["Body"].read()
+        upload_to_azure(obj["Key"], file_content)
+```
+
+### S3 읽기 IAM 권한
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject", "s3:ListBucket"],
+  "Resource": [
+    "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b",
+    "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b/*"
+  ]
+}
+```
 
 ---
 
@@ -292,9 +355,11 @@ terraform {
 |--------|------|
 | `aws_iam_role` | Lambda 실행 역할 |
 | `data.archive_file` | Python 코드 → ZIP 패키징 |
-| `aws_lambda_function` | 로그인/삭제/비용 감지 함수 3개 |
-| `aws_lambda_permission` | CloudWatch Logs / SNS 트리거 권한 |
+| `aws_lambda_function` | 로그인/삭제/비용/S3동기화 함수 4개 |
+| `aws_lambda_permission` | CloudWatch Logs / SNS / EventBridge 트리거 권한 |
 | `aws_cloudwatch_log_subscription_filter` | 이벤트 패턴 필터 + Lambda 연결 |
+| `aws_cloudwatch_event_rule` | EventBridge 스케줄 (매일 KST 02:00) |
+| `aws_iam_role_policy` | S3 읽기 권한 (CloudTrail 버킷) |
 
 ### cloudwatch 모듈
 
@@ -334,6 +399,19 @@ terraform {
 ```
 AWSLambdaBasicExecutionRole (AWS 관리형 정책)
 → CloudWatch Logs 기록 권한만 부여
+```
+
+### Lambda S3 읽기 권한 (s3_to_azure 전용)
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject", "s3:ListBucket"],
+  "Resource": [
+    "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b",
+    "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b/*"
+  ]
+}
 ```
 
 ---
