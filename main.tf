@@ -8,12 +8,14 @@ module "cloudtrail" {
 module "lambda" {
   source = "./modules/lambda"
 
-  project_name          = var.project_name
-  log_group_arn         = module.cloudtrail.log_group_arn
-  log_group_name        = module.cloudtrail.log_group_name
-  teams_webhook_login   = var.teams_webhook_login
-  teams_webhook_delete  = var.teams_webhook_delete
-  teams_webhook_billing = var.teams_webhook_billing
+  project_name            = var.project_name
+  log_group_arn           = module.cloudtrail.log_group_arn
+  log_group_name          = module.cloudtrail.log_group_name
+  teams_webhook_login     = var.teams_webhook_login
+  teams_webhook_delete    = var.teams_webhook_delete
+  teams_webhook_billing   = var.teams_webhook_billing
+  azure_connection_string = var.azure_connection_string
+  cloudtrail_bucket       = "aws-cloudtrail-logs-448768137813-05d6a32b"
 
   depends_on = [module.cloudtrail]
 }

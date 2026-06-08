@@ -24,3 +24,12 @@ variable "teams_webhook_billing" {
   type      = string
   sensitive = true
 }
+
+variable "azure_connection_string" {
+  type      = string
+  sensitive = true
+}
+
+variable "cloudtrail_bucket" {
+  type = string
+}

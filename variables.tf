@@ -33,3 +33,9 @@ variable "teams_webhook_billing" {
   type        = string
   sensitive   = true
 }
+
+variable "azure_connection_string" {
+  description = "Azure Blob Storage 연결 문자열"
+  type        = string
+  sensitive   = true
+}

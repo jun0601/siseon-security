@@ -9,3 +9,7 @@ output "lambda_delete_arn" {
 output "lambda_billing_arn" {
   value = aws_lambda_function.billing_alert.arn
 }
+
+output "lambda_s3_to_azure_arn" {
+  value = aws_lambda_function.s3_to_azure.arn
+}

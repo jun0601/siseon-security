@@ -124,3 +124,71 @@ resource "aws_lambda_function" "billing_alert" {
     }
   }
 }
+
+# S3 → Azure Blob 동기화 Lambda ZIP
+data "archive_file" "s3_to_azure" {
+  type        = "zip"
+  source_file = "${path.module}/functions/s3_to_azure.py"
+  output_path = "${path.module}/functions/s3_to_azure.zip"
+}
+
+# S3 → Azure Blob 동기화 Lambda
+resource "aws_lambda_function" "s3_to_azure" {
+  function_name    = "${var.project_name}-lambda-s3-to-azure"
+  role             = aws_iam_role.lambda.arn
+  handler          = "s3_to_azure.lambda_handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.s3_to_azure.output_path
+  source_code_hash = data.archive_file.s3_to_azure.output_base64sha256
+  timeout          = 300
+
+  environment {
+    variables = {
+      AZURE_CONNECTION_STRING = var.azure_connection_string
+      AZURE_CONTAINER_NAME    = "cloudtrail-backup"
+      SOURCE_BUCKET           = var.cloudtrail_bucket
+      SOURCE_PREFIX           = "AWSLogs/448768137813/CloudTrail/ap-northeast-2/"
+    }
+  }
+}
+
+# 매일 새벽 2시 실행 (EventBridge)
+resource "aws_cloudwatch_event_rule" "s3_to_azure_schedule" {
+  name                = "${var.project_name}-s3-to-azure-schedule"
+  description         = "매일 새벽 2시 S3 → Azure Blob 동기화"
+  schedule_expression = "cron(0 17 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "s3_to_azure" {
+  rule      = aws_cloudwatch_event_rule.s3_to_azure_schedule.name
+  target_id = "s3-to-azure-lambda"
+  arn       = aws_lambda_function.s3_to_azure.arn
+}
+
+resource "aws_lambda_permission" "s3_to_azure_eventbridge" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.s3_to_azure.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.s3_to_azure_schedule.arn
+}
+
+resource "aws_iam_role_policy" "lambda_s3_read" {
+  name = "${var.project_name}-lambda-s3-read"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ]
+      Resource = [
+        "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b",
+        "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b/*"
+      ]
+    }]
+  })
+}
