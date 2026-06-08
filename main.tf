@@ -37,3 +37,11 @@ module "billing" {
 
   depends_on = [module.lambda]
 }
+
+module "azure_monitor" {
+  source = "./modules/azure_monitor"
+
+  project_name        = var.project_name
+  resource_group_name = var.azure_resource_group
+  location            = var.azure_location
+}

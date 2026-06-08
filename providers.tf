@@ -16,6 +16,10 @@ terraform {
     archive = {
       source = "hashicorp/archive"
     }
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -28,4 +32,10 @@ provider "aws" {
   alias   = "us_east_1"
   region  = "us-east-1"
   profile = "siseon"
+}
+
+provider "azurerm" {
+  features {}
+  tenant_id       = var.azure_tenant_id
+  subscription_id = var.azure_subscription_id
 }

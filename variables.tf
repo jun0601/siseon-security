@@ -39,3 +39,27 @@ variable "azure_connection_string" {
   type        = string
   sensitive   = true
 }
+
+variable "azure_tenant_id" {
+  description = "Azure 테넌트 ID"
+  type        = string
+  default     = "93985ad4-4ec6-4a22-a4bd-7a28a6294fd5"
+}
+
+variable "azure_subscription_id" {
+  description = "Azure 구독 ID"
+  type        = string
+  default     = "41ba8281-70ed-41df-979f-13eef4480f49"
+}
+
+variable "azure_resource_group" {
+  description = "Azure 리소스 그룹"
+  type        = string
+  default     = "siseon-rg"
+}
+
+variable "azure_location" {
+  description = "Azure 리전"
+  type        = string
+  default     = "Korea Central"
+}
