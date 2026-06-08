@@ -151,25 +151,11 @@ Lambda 코드에서 `\n` → `<br>` 태그로 변경했습니다.
 학원 PC에서 `terraform apply`로 인프라를 배포한 후,
 노트북으로 작업하려 했더니 tfstate가 없어 작업이 불가능했습니다.
 
-```
-# 노트북에서 terraform plan 실행 시
-→ tfstate가 없어 실제 AWS 리소스와 상태 불일치
-→ Lambda 코드 수정, Billing 알람 추가 등 작업 불가
-```
-
 ### 원인
 tfstate가 학원 PC 로컬에만 존재했고 `.gitignore`로 GitHub에도 올라가지 않았습니다.
 
 ### 해결
 S3 Remote Backend를 도입하여 tfstate를 중앙에서 관리합니다.
-
-```bash
-aws s3 mb s3://siseon-terraform-state --region ap-northeast-2 --profile siseon
-aws s3api put-bucket-versioning \
-  --bucket siseon-terraform-state \
-  --versioning-configuration Status=Enabled \
-  --profile siseon
-```
 
 ```hcl
 terraform {
@@ -182,15 +168,6 @@ terraform {
 }
 ```
 
-```bash
-terraform init -migrate-state  # 로컬 → S3 자동 이관
-```
-
-### 도입 후 효과
-- 학원 PC, 노트북 어디서든 즉시 작업 가능
-- tfstate 민감 정보 GitHub 노출 차단
-- S3 버저닝으로 tfstate 변경 이력 관리
-
 ### 교훈
 팀 프로젝트나 멀티 환경에서는 Remote Backend가 필수입니다.
 
@@ -199,54 +176,14 @@ terraform init -migrate-state  # 로컬 → S3 자동 이관
 ## 8. Billing 알람 크로스 리전 문제 → AWS Budgets로 전환
 
 ### 증상
-CloudWatch Billing 메트릭은 `us-east-1` 에서만 조회 가능합니다.
-초기 설계는 `CloudWatch Alarm(us-east-1) → SNS(us-east-1) → Lambda(ap-northeast-2)` 구조였으나
-Lambda Permission 설정이 계속 실패했습니다.
-
-```
-module.billing.aws_lambda_permission.billing_sns: Still creating... [02m40s elapsed]
-→ 크로스 리전 Lambda Permission 타임아웃
-```
-
-### 원인
-SNS(`us-east-1`)가 Lambda(`ap-northeast-2`)를 호출하려면
-Lambda Permission을 Lambda가 있는 리전(ap-northeast-2)에서 설정해야 합니다.
-하지만 billing 모듈 전체가 `us-east-1` provider를 사용하고 있어
-같은 모듈 내에서 리전을 나눠 설정하기가 복잡했습니다.
+CloudWatch Billing 메트릭은 `us-east-1`에서만 조회 가능합니다.
+크로스 리전 Lambda Permission 설정이 계속 타임아웃으로 실패했습니다.
 
 ### 해결
-**AWS Budgets** 서비스로 전환했습니다.
-
-AWS Budgets는 **글로벌 서비스**라 리전 구분이 없고,
-SNS와 Lambda를 모두 `ap-northeast-2`에서 구성할 수 있어
-크로스 리전 문제가 발생하지 않습니다.
-
-```hcl
-resource "aws_budgets_budget" "daily" {
-  name         = "${var.project_name}-budget-daily"
-  budget_type  = "COST"
-  limit_amount = "5"
-  limit_unit   = "USD"
-  time_unit    = "DAILY"
-
-  notification {
-    comparison_operator       = "GREATER_THAN"
-    threshold                 = 100
-    threshold_type            = "PERCENTAGE"
-    notification_type         = "ACTUAL"
-    subscriber_sns_topic_arns = [aws_sns_topic.billing.arn]
-  }
-}
-```
-
-### 추가 장점
-- AWS Budgets는 월 2개까지 **무료**
-- CloudWatch Billing Alarm보다 더 직관적인 비용 관리 서비스
-- 일별/월별 기준 모두 지원
+**AWS Budgets** 서비스로 전환했습니다. 글로벌 서비스라 리전 구분이 없고 월 2개까지 무료입니다.
 
 ### 교훈
 멀티 리전 아키텍처에서는 서비스의 리전 특성을 사전에 파악해야 합니다.
-크로스 리전 구성이 복잡해질 경우 글로벌 서비스 대안을 검토하는 것이 효율적입니다.
 
 ---
 
@@ -268,6 +205,146 @@ resource "aws_cloudtrail" "main" {
 
 ---
 
+## 10. Azure Workbook name 필드 UUID 강제
+
+### 증상
+```
+Error: expected "name" to be a valid UUID, got siseon-cloudtrail-audit
+```
+
+### 원인
+`azurerm_application_insights_workbook` 리소스의 `name` 필드는 Azure 스펙상 **UUID 형식만 허용**합니다.
+
+### 해결
+`name`에 UUID 형식을 사용하고, 실제 표시 이름은 `display_name`으로 분리했습니다.
+
+```hcl
+resource "azurerm_application_insights_workbook" "security_audit" {
+  name         = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"  # 내부 UUID
+  display_name = "StockOps CloudTrail 보안 감사 대시보드"   # 표시 이름
+}
+```
+
+### 교훈
+Azure 리소스는 AWS와 네이밍 규칙이 다른 경우가 있습니다. 공식 문서의 필드 제약 조건을 사전에 확인해야 합니다.
+
+---
+
+## 11. Azure Workbook location 오타로 배포 실패
+
+### 증상
+```
+Error: "siseon-rg" was not found in the list of supported Azure Locations
+```
+
+### 원인
+`main.tf` 작성 시 `location` 필드에 `var.location` 대신 `var.resource_group_name`을 잘못 입력했습니다.
+
+```hcl
+# 잘못된 코드
+location = var.resource_group_name  ← 리소스 그룹 이름이 들어감
+
+# 올바른 코드
+location = var.location             ← Korea Central
+```
+
+### 해결
+`location` 필드를 `var.location`으로 수정 후 재배포했습니다.
+
+### 교훈
+Terraform 코드 작성 시 변수명이 유사한 경우 오타가 발생하기 쉽습니다. `terraform plan` 출력을 꼼꼼히 확인해야 합니다.
+
+---
+
+## 12. Azure Function 코드 배포 별도 필요
+
+### 증상
+Terraform apply 성공 후 Azure Portal에서 Function App 함수 목록이 비어있었습니다.
+
+### 원인
+Terraform은 Function App **인프라(리소스)**만 생성합니다.
+실제 Python 코드는 별도 배포 과정이 필요합니다.
+
+### 해결
+Azure Functions Core Tools로 코드를 별도 배포합니다.
+
+```bash
+# Azure Functions Core Tools 설치
+winget install Microsoft.AzureFunctionsCoreTools
+# 또는 https://go.microsoft.com/fwlink/?linkid=2174087 에서 직접 다운로드
+
+# 코드 배포
+cd modules/azure_monitor/functions
+func azure functionapp publish siseon-blob-to-laws --python
+```
+
+### 교훈
+Azure Function은 인프라 프로비저닝(Terraform)과 코드 배포(func publish)가 분리된 구조입니다.
+배포 순서: `terraform apply` → `func publish`
+
+---
+
+## 13. Azure Monitor Workbook에서 Log Analytics 연결 안 됨
+
+### 증상
+Workbook 대시보드를 열면 모든 패널에 아래 오류가 표시됩니다.
+```
+Log Analytics 작업 영역 리소스가 선택되지 않았습니다.
+```
+
+### 원인
+Workbook의 KQL 쿼리 패널에 `crossComponentResources` 설정이 없으면
+어떤 Log Analytics Workspace를 대상으로 쿼리할지 알 수 없습니다.
+
+### 해결
+Terraform의 Workbook `data_json` 내 각 쿼리 패널에 `crossComponentResources`를 추가했습니다.
+
+```hcl
+{
+  type = 3
+  content = {
+    version      = "KqlItem/1.0"
+    query        = "CloudTrailLogs_CL | take 10"
+    queryType    = 0
+    resourceType = "microsoft.operationalinsights/workspaces"
+    crossComponentResources = [
+      "/subscriptions/.../resourceGroups/siseon-rg/providers/Microsoft.OperationalInsights/workspaces/siseon-security-logs"
+    ]
+  }
+}
+```
+
+### 교훈
+Azure Monitor Workbook에서 Log Analytics 쿼리를 사용할 때는 반드시 대상 Workspace 리소스 ID를 명시해야 합니다.
+
+---
+
+## 14. terraform.tfvars 노트북 환경에서 누락
+
+### 증상
+노트북에서 `terraform plan` 실행 시 민감 변수를 콘솔에서 직접 입력하라는 프롬프트가 발생했습니다.
+
+### 원인
+`terraform.tfvars`는 민감 정보 포함으로 `.gitignore`에 등록되어 있어 GitHub에 올라가지 않습니다.
+새 환경(노트북)에서 `git pull` 후에도 해당 파일이 없는 상태입니다.
+
+### 해결
+작업 PC마다 `terraform.tfvars`를 직접 생성해야 합니다.
+
+```hcl
+# terraform.tfvars (직접 생성 필요, 절대 커밋 금지)
+teams_webhook_login   = "https://..."
+teams_webhook_delete  = "https://..."
+teams_webhook_billing = "https://..."
+azure_connection_string = "DefaultEndpointsProtocol=https;..."
+```
+
+### 교훈
+민감 변수는 별도 시크릿 관리 도구(AWS Secrets Manager, Azure Key Vault 등) 활용을 권장합니다.
+멀티 PC 환경에서는 반드시 첫 작업 전 `terraform.tfvars` 생성 여부를 확인해야 합니다.
+
+---
+
 ## 📋 트러블슈팅 요약
 
 | # | 문제 | 원인 | 해결 |
@@ -281,3 +358,8 @@ resource "aws_cloudtrail" "main" {
 | 7 | 멀티 PC tfstate 관리 | 로컬 tfstate 한계 | S3 Remote Backend 도입 |
 | 8 | Billing 크로스 리전 문제 | us-east-1 ↔ ap-northeast-2 충돌 | AWS Budgets 글로벌 서비스로 전환 |
 | 9 | 로그 그룹 미생성 | CloudTrail-CW 연동 미설정 | CloudWatch Logs 연동 활성화 |
+| 10 | Workbook name UUID 강제 | Azure 리소스 네이밍 스펙 | UUID 형식 사용 + display_name 분리 |
+| 11 | location 오타 배포 실패 | 변수명 혼동 | var.location으로 수정 |
+| 12 | Function 코드 미배포 | Terraform은 인프라만 생성 | func publish 별도 실행 |
+| 13 | Workbook Workspace 연결 안 됨 | crossComponentResources 누락 | 각 쿼리 패널에 Workspace 리소스 ID 명시 |
+| 14 | tfvars 노트북 누락 | .gitignore 처리된 파일 | 작업 PC마다 직접 생성 |

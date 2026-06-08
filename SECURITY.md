@@ -35,18 +35,18 @@
 │  cloudtrail-     │               ↓
 │  backup          │    ┌──────────────────────────────┐
 │  (재해복구 백업)  │    │      AWS Lambda (Python)      │
-└──────────────────┘    │  • gzip 압축 해제             │
-                        │  • CloudTrail 로그 파싱       │
-                        │  • AWS 서비스 이벤트 필터링   │
-                        │  • 사용자/IP/리전/시간 추출   │
-                        │  • KST 시간 변환              │
-                        └──────────┬───────────────────┘
-                                   ↓
-                        ┌──────────────────────────────┐
-                        │    Power Automate 웹훅        │
-                        └──────────┬───────────────────┘
-                                   ↓
-                        ┌──────────────────────────────┐
+│        ↓          │    │  • gzip 압축 해제             │
+│  Azure Function  │    │  • CloudTrail 로그 파싱       │
+│  (Blob 트리거)   │    │  • AWS 서비스 이벤트 필터링   │
+│        ↓          │    │  • 사용자/IP/리전/시간 추출   │
+│  Log Analytics   │    │  • KST 시간 변환              │
+│  Workspace       │    └──────────┬───────────────────┘
+│        ↓          │               ↓
+│  Azure Monitor   │    ┌──────────────────────────────┐
+│  Workbook        │    │    Power Automate 웹훅        │
+│  (페일오버 대시  │    └──────────┬───────────────────┘
+│   보드)          │               ↓
+└──────────────────┘    ┌──────────────────────────────┐
                         │   Microsoft Teams 채널        │
                         │  • aws-logins (로그인 알림)   │
                         │  • aws-alerts (삭제 알림)     │
@@ -103,8 +103,8 @@ CloudTrail 로그를 Azure Blob Storage에 이중 백업합니다.
 S3 (CloudTrail 로그 원본)
         ↓
 Lambda (매일 KST 02:00 EventBridge 트리거)
-  • 오늘 날짜 기준 S3 파일 목록 조회
-  • S3 GetObject → Azure Blob REST API PUT
+  • 날짜 파라미터 있으면 해당 기간 동기화 (백필용)
+  • 파라미터 없으면 오늘 날짜 기준 동기화 (크론 기본 동작)
         ↓
 Azure Blob Storage
 siseonstorage/cloudtrail-backup/
@@ -126,17 +126,30 @@ AWSLogs/448768137813/CloudTrail/ap-northeast-2/YYYY/MM/DD/
 
 ```python
 def lambda_handler(event, context):
-    s3 = boto3.client("s3")
-    today = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-    prefix = f"{SOURCE_PREFIX}{today}/"
+    # 날짜 범위 파라미터 지원 (백필용)
+    if "start_date" in event and "end_date" in event:
+        dates = generate_date_range(event["start_date"], event["end_date"])
+    else:
+        # 크론탭 실행 시 오늘 날짜 기준 (기존 동작 유지)
+        dates = [datetime.now(timezone.utc).strftime("%Y/%m/%d")]
 
-    response = s3.list_objects_v2(Bucket=SOURCE_BUCKET, Prefix=prefix)
+    for today in dates:
+        prefix = f"{SOURCE_PREFIX}{today}/"
+        response = s3.list_objects_v2(Bucket=SOURCE_BUCKET, Prefix=prefix)
+        for obj in response.get("Contents", []):
+            file_content = s3.get_object(
+                Bucket=SOURCE_BUCKET, Key=obj["Key"]
+            )["Body"].read()
+            upload_to_azure(obj["Key"], file_content)
+```
 
-    for obj in response["Contents"]:
-        file_content = s3.get_object(
-            Bucket=SOURCE_BUCKET, Key=obj["Key"]
-        )["Body"].read()
-        upload_to_azure(obj["Key"], file_content)
+### 수동 백필 방법 (Lambda 테스트 이벤트)
+
+```json
+{
+  "start_date": "2026-06-02",
+  "end_date": "2026-06-07"
+}
 ```
 
 ### S3 읽기 IAM 권한
@@ -151,6 +164,114 @@ def lambda_handler(event, context):
   ]
 }
 ```
+
+---
+
+## 🔵 Azure Monitor 페일오버 모니터링 설계
+
+### 설계 목적
+
+AWS 장애 시나리오에서 Azure Blob에 백업된 CloudTrail 로그를
+Azure Monitor Workbook으로 시각화하여 보안 감사를 중단 없이 수행합니다.
+
+### 파이프라인 구성
+
+```
+Azure Blob (cloudtrail-backup)
+        ↓ Blob 트리거 (파일 업로드 즉시 자동 실행)
+Azure Function (siseon-blob-to-laws, Python 3.11)
+  • CloudTrail .gz 파일 압축 해제
+  • JSON Records[] 파싱
+  • 500건 단위 배치 전송
+        ↓ Log Analytics Data Collector API
+Log Analytics Workspace (siseon-security-logs)
+  • 테이블명: CloudTrailLogs_CL
+  • 보존: 30일 (PerGB2018 SKU)
+        ↓ KQL 쿼리
+Azure Monitor Workbook
+  • CloudTrail 이벤트 현황 Top 10 (바차트)
+  • 오류 발생 이벤트 (테이블)
+  • 소스 IP별 접근 현황 (파이차트)
+  • 시간대별 이벤트 추이 (타임차트)
+```
+
+### Terraform 멀티클라우드 통합 관리
+
+단일 Terraform 프로젝트에서 AWS와 Azure 리소스를 통합 관리합니다.
+
+```hcl
+# providers.tf
+provider "aws" {
+  region  = var.aws_region
+  profile = "siseon"
+}
+
+provider "azurerm" {
+  features {}
+  tenant_id       = var.azure_tenant_id
+  subscription_id = var.azure_subscription_id
+}
+```
+
+### Azure Function 배포 방식
+
+Terraform은 Azure Function App 인프라만 생성하고,
+실제 Python 코드는 Azure Functions Core Tools로 별도 배포합니다.
+
+```bash
+cd modules/azure_monitor/functions
+func azure functionapp publish siseon-blob-to-laws --python
+```
+
+### Azure 리소스 구성
+
+| 리소스 | 이름 | 설명 |
+|--------|------|------|
+| Log Analytics Workspace | siseon-security-logs | CloudTrail 로그 수집/쿼리 |
+| Function App | siseon-blob-to-laws | Blob 트리거 → Log Analytics 전송 |
+| App Service Plan | siseon-func-plan | Consumption(Y1) 무료 티어 |
+| Storage Account | siseonfuncstore | Function App 내부 스토리지 |
+| Azure Workbook | StockOps CloudTrail 보안 감사 대시보드 | KQL 기반 시각화 |
+
+### CloudTrailLogs_CL 테이블 스키마
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| EventTime_t | datetime | 이벤트 발생 시각 |
+| EventName_s | string | API 이름 (ConsoleLogin, DeleteBucket 등) |
+| EventSource_s | string | AWS 서비스 (signin.amazonaws.com 등) |
+| AWSRegion_s | string | 이벤트 발생 리전 |
+| SourceIPAddress_s | string | 요청 소스 IP |
+| UserAgent_s | string | 클라이언트 에이전트 |
+| UserIdentity_s | string | 사용자 정보 (JSON) |
+| ErrorCode_s | string | 오류 코드 (정상 시 공백) |
+| ErrorMessage_s | string | 오류 메시지 |
+| EventID_s | string | 이벤트 고유 ID |
+
+### KQL 쿼리 예시
+
+```kusto
+// 이벤트 현황 Top 10
+CloudTrailLogs_CL
+| where TimeGenerated > ago(24h)
+| summarize Count=count() by EventName_s
+| order by Count desc | take 10
+
+// 오류 발생 이벤트
+CloudTrailLogs_CL
+| where isnotempty(ErrorCode_s)
+| project TimeGenerated, EventName_s, ErrorCode_s, SourceIPAddress_s
+| order by TimeGenerated desc
+```
+
+### Azure Blob RBAC
+
+| 사용자 | 역할 |
+|--------|------|
+| jh.lee@siseoninfra.onmicrosoft.com | 소유자 (구독 상속) |
+| hs.lee@siseoninfra.onmicrosoft.com | Storage Blob 데이터 소유자 + 읽기 권한자 및 데이터 액세스 |
+| jw.kim@siseoninfra.onmicrosoft.com | Storage Blob 데이터 소유자 + 읽기 권한자 및 데이터 액세스 |
+| zo.kim@siseoninfra.onmicrosoft.com | Storage Blob 데이터 소유자 + 읽기 권한자 및 데이터 액세스 |
 
 ---
 
@@ -377,6 +498,16 @@ terraform {
 | `aws_sns_topic_subscription` | SNS → Lambda 구독 |
 | `aws_lambda_permission` | SNS 트리거 Lambda 권한 |
 
+### azure_monitor 모듈 (신규)
+
+| 리소스 | 설명 |
+|--------|------|
+| `azurerm_log_analytics_workspace` | CloudTrail 로그 수집 Workspace |
+| `azurerm_storage_account` | Function App 내부 스토리지 |
+| `azurerm_service_plan` | Function App 실행 플랜 (Consumption Y1) |
+| `azurerm_linux_function_app` | Blob 트리거 → Log Analytics 전송 |
+| `azurerm_application_insights_workbook` | 보안 감사 대시보드 |
+
 ---
 
 ## 🔑 IAM 권한 설계 (최소 권한 원칙)
@@ -413,6 +544,16 @@ AWSLambdaBasicExecutionRole (AWS 관리형 정책)
   ]
 }
 ```
+
+### Azure RBAC (siseonstorage)
+
+| 역할 | 용도 |
+|------|------|
+| Storage Blob 데이터 소유자 | Blob 데이터 읽기/쓰기/삭제/권한 설정 |
+| 읽기 권한자 및 데이터 액세스 | Azure Portal에서 스토리지 계정 목록 표시 |
+
+> **참고**: `Storage Blob 데이터 소유자`만으로는 Azure Portal에서 스토리지 계정이 목록에 표시되지 않습니다.
+> Portal에서 리소스를 보려면 Azure Resource Manager 레벨의 `읽기 권한자 및 데이터 액세스` 역할이 별도로 필요합니다.
 
 ---
 
