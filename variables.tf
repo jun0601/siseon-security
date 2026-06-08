@@ -27,3 +27,9 @@ variable "teams_webhook_delete" {
   type        = string
   sensitive   = true
 }
+
+variable "teams_webhook_billing" {
+  description = "Teams 빌링 알림 웹훅 URL"
+  type        = string
+  sensitive   = true
+}

@@ -100,3 +100,27 @@ resource "aws_cloudwatch_log_subscription_filter" "delete" {
 
   depends_on = [aws_lambda_permission.delete_alert]
 }
+
+# Billing Lambda ZIP
+data "archive_file" "billing_alert" {
+  type        = "zip"
+  source_file = "${path.module}/functions/billing_alert.py"
+  output_path = "${path.module}/functions/billing_alert.zip"
+}
+
+# Billing Lambda 함수
+resource "aws_lambda_function" "billing_alert" {
+  function_name    = "${var.project_name}-lambda-billing-alert"
+  role             = aws_iam_role.lambda.arn
+  handler          = "billing_alert.lambda_handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.billing_alert.output_path
+  source_code_hash = data.archive_file.billing_alert.output_base64sha256
+  timeout          = 30
+
+  environment {
+    variables = {
+      TEAMS_WEBHOOK_URL = var.teams_webhook_billing
+    }
+  }
+}
