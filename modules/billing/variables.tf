@@ -5,3 +5,7 @@ variable "project_name" {
 variable "lambda_billing_arn" {
   type = string
 }
+
+variable "account_id" {
+  type = string
+}

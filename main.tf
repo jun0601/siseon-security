@@ -34,6 +34,7 @@ module "billing" {
 
   project_name       = var.project_name
   lambda_billing_arn = module.lambda.lambda_billing_arn
+  account_id         = var.account_id
 
   depends_on = [module.lambda]
 }

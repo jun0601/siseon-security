@@ -60,3 +60,28 @@ resource "aws_lambda_permission" "billing_sns" {
   principal     = "sns.amazonaws.com"
   source_arn    = aws_sns_topic.billing.arn
 }
+
+# AWS Budgets → SNS 발행 권한
+resource "aws_sns_topic_policy" "billing" {
+  arn = aws_sns_topic.billing.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowBudgetsPublish"
+        Effect    = "Allow"
+        Principal = {
+          Service = "budgets.amazonaws.com"
+        }
+        Action    = "SNS:Publish"
+        Resource  = aws_sns_topic.billing.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = var.account_id
+          }
+        }
+      }
+    ]
+  })
+}
