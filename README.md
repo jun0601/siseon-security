@@ -360,3 +360,7 @@ terraform destroy -auto-approve
 - AWS CLI SSO 토큰 만료 시 `aws sso login --profile siseon` 재로그인 필요
 - Azure CLI 토큰 만료 시 `az login` 재로그인 필요
 - AWS Budgets는 월 2개까지 무료
+
+## 📚 문서
+- [SECURITY.md](./SECURITY.md) - 보안 설계 문서
+- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) - 트러블슈팅 기록
