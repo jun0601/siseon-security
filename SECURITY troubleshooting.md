@@ -345,6 +345,49 @@ azure_connection_string = "DefaultEndpointsProtocol=https;..."
 
 ---
 
+## 15. AWS Budgets SNS 토픽 발행 권한 누락
+
+### 증상
+AWS로부터 아래 메일 수신:
+Unfortunately, we are unable to successfully publish to this SNS topic at this time.
+Please ensure that AWS Budgets has been added to the list of services that are allowed to publish to this SNS topic.
+
+### 원인
+AWS Budgets가 SNS 토픽에 메시지를 발행하려면 SNS 토픽 정책에 `budgets.amazonaws.com` 서비스 권한이 명시적으로 있어야 합니다.
+`aws_sns_topic_policy` 리소스가 누락된 상태였습니다.
+
+### 해결
+`modules/billing/main.tf`에 SNS 토픽 정책 추가:
+
+```hcl
+resource "aws_sns_topic_policy" "billing" {
+  arn = aws_sns_topic.billing.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowBudgetsPublish"
+        Effect    = "Allow"
+        Principal = {
+          Service = "budgets.amazonaws.com"
+        }
+        Action    = "SNS:Publish"
+        Resource  = aws_sns_topic.billing.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = var.account_id
+          }
+        }
+      }
+    ]
+  })
+}
+```
+
+### 교훈
+AWS Budgets, CloudWatch 등 AWS 서비스가 SNS에 발행하려면 SNS 토픽 정책에 해당 서비스를 명시적으로 허용해야 합니다. 리소스 생성 후 실제 알람이 동작하는지 반드시 검증해야 합니다.
+
 ## 📋 트러블슈팅 요약
 
 | # | 문제 | 원인 | 해결 |
@@ -363,3 +406,4 @@ azure_connection_string = "DefaultEndpointsProtocol=https;..."
 | 12 | Function 코드 미배포 | Terraform은 인프라만 생성 | func publish 별도 실행 |
 | 13 | Workbook Workspace 연결 안 됨 | crossComponentResources 누락 | 각 쿼리 패널에 Workspace 리소스 ID 명시 |
 | 14 | tfvars 노트북 누락 | .gitignore 처리된 파일 | 작업 PC마다 직접 생성 |
+| 15 | AWS Budgets SNS 발행 권한 누락 | SNS 토픽 정책에 budgets.amazonaws.com 미포함 | aws_sns_topic_policy 리소스 추가 |
