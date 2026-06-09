@@ -423,19 +423,20 @@ message = (
 
 ---
 
-## 🗄️ Terraform Remote Backend (S3)
+## 🗄️ tfstate 보안 관리 (S3 Remote Backend)
 
-### 설계 목적
+### 보안 위협
 
-로컬에 tfstate 파일을 두면 팀원 간 상태 충돌, 민감 정보 노출, PC 분실 시 상태 손실 등의 문제가 발생합니다.
-S3 Remote Backend를 통해 이를 해결합니다.
+로컬에 tfstate를 저장하면 아래 보안 위협이 발생합니다.
 
-| 목적 | 설명 |
+| 위협 | 설명 |
 |------|------|
-| 팀 협업 | tfstate 중앙 관리로 상태 충돌 방지 |
-| 보안 | 민감 정보(DB 비밀번호 등) GitHub 노출 차단 |
-| 가용성 | 어느 PC에서든 동일한 상태로 작업 가능 |
-| 복구 | S3 버저닝으로 tfstate 변경 이력 관리 |
+| 민감정보 노출 | tfstate에는 DB 비밀번호, API 키 등 평문 저장 |
+| GitHub 실수 커밋 | .gitignore 누락 시 민감정보 공개 레포에 노출 |
+| PC 분실/도난 | 로컬 tfstate 유출 시 인프라 전체 정보 노출 |
+| 상태 충돌 | 멀티 PC 환경에서 tfstate 불일치로 인프라 꼬임 |
+
+### 해결: S3 Remote Backend + 버저닝
 
 ```hcl
 terraform {
@@ -447,6 +448,25 @@ terraform {
   }
 }
 ```
+
+### 보안 설정
+
+| 항목 | 설정 | 이유 |
+|------|------|------|
+| S3 버저닝 | 활성화 | tfstate 변경 이력 관리 및 롤백 |
+| 퍼블릭 액세스 | 차단 | tfstate 외부 노출 방지 |
+| IAM Identity Center | SSO 인증 | 장기 액세스 키 미사용 |
+| .gitignore | tfstate, tfvars 제외 | 민감정보 GitHub 노출 차단 |
+
+### 파트별 tfstate 분리
+
+| 파트 | key | 담당 |
+|------|-----|------|
+| siseon-security | `security/terraform.tfstate` | 이준형 |
+| siseon-infra | `infra/terraform.tfstate` | 김진우 |
+| siseon-infra-monitoring | `monitoring/terraform.tfstate` | 이준형 |
+
+---
 
 ### 파트별 key 구성
 
