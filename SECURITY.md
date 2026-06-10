@@ -577,6 +577,82 @@ AWSLambdaBasicExecutionRole (AWS 관리형 정책)
 
 ---
 
+---
+
+## 🔐 멀티클라우드 SSO 설계 (Azure Entra ID → AWS SAML Federation)
+
+### 설계 목적
+
+팀원 4명이 Azure Entra ID 계정 하나로 AWS 콘솔에 접근할 수 있도록
+SAML Federation을 구성합니다.
+
+### 방향 선택 이유
+
+| 방향 | 가능 여부 | 이유 |
+|------|----------|------|
+| AWS → Azure | ❌ | Azure Entra ID Premium P1 필요 ($6/사용자/월) |
+| Azure → AWS | ✅ | AWS IAM SAML Federation 무료 지원 |
+
+Azure Free 플랜에서는 Direct Federation이 불가능하여
+**Azure Entra ID(IdP) → AWS(SP)** 방향으로 구성했습니다.
+
+### 구성도
+Microsoft Entra ID (IdP - 인증 제공자)
+jh.lee@siseoninfra.onmicrosoft.com
+hs.lee@siseoninfra.onmicrosoft.com
+jw.kim@siseoninfra.onmicrosoft.com
+zo.kim@siseoninfra.onmicrosoft.com
+↓ SAML Token 발급
+AWS IAM (SP - 서비스 제공자)
+AzureAD SAML Provider
+AzureAD-SSORole (AdministratorAccess)
+↓
+AWS 콘솔 접근
+(페더레이션 사용자: AzureAD-SSORole/jh.lee@siseoninfra.onmicrosoft.com)
+
+### 구성 단계
+
+| 단계 | 위치 | 작업 |
+|------|------|------|
+| 1 | Azure Entra ID | 엔터프라이즈 앱 → AWS IAM Identity Center 앱 추가 |
+| 2 | Azure Entra ID | SAML 설정 (식별자/회신 URL: signin.aws.amazon.com/saml) |
+| 3 | Azure Entra ID | 클레임 3개 추가 (Role, RoleSessionName, SessionDuration) |
+| 4 | Azure Entra ID | 페더레이션 메타데이터 XML 다운로드 |
+| 5 | AWS IAM | ID 제공업체 추가 (SAML, 이름: AzureAD, XML 업로드) |
+| 6 | AWS IAM | AzureAD-SSORole 생성 (SAML Federation + AdministratorAccess) |
+| 7 | Azure Entra ID | 앱 역할 생성 (Role ARN + SAML Provider ARN) |
+| 8 | Azure Entra ID | 사용자 4명 할당 + AzureAD-SSORole 매핑 |
+
+### AWS IAM Role 생성 (CLI)
+
+```bash
+aws iam create-role \
+  --role-name AzureAD-SSORole \
+  --assume-role-policy-document '{
+    "Version":"2012-10-17",
+    "Statement":[{
+      "Effect":"Allow",
+      "Principal":{"Federated":"arn:aws:iam::448768137813:saml-provider/AzureAD"},
+      "Action":"sts:AssumeRoleWithSAML",
+      "Condition":{"StringEquals":{"SAML:aud":"https://signin.aws.amazon.com/saml"}}
+    }]
+  }' --profile siseon
+
+aws iam attach-role-policy \
+  --role-name AzureAD-SSORole \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess \
+  --profile siseon
+```
+
+### 앱 역할 값
+arn:aws:iam::448768137813:role/AzureAD-SSORole,arn:aws:iam::448768137813:saml-provider/AzureAD
+
+### 테스트
+https://myapps.microsoft.com
+→ AWS IAM Identity Center 앱 클릭
+→ AWS 콘솔 자동 로그인
+→ 페더레이션 사용자 확인: AzureAD-SSORole/jh.lee@siseoninfra.onmicrosoft.com
+
 ## 📊 CloudWatch Metric Filter
 
 Subscription Filter와 별도로 Metric Filter를 유지합니다.
