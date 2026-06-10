@@ -275,7 +275,7 @@ CloudTrailLogs_CL
 
 ---
 
-## 💸 비용 모니터링 설계 (AWS Budgets)
+## 💸 비용 모니터링 설계 (EventBridge + Cost Explorer)
 
 ### 설계 목적
 
@@ -304,28 +304,45 @@ CloudTrailLogs_CL
 | 일별 경보 | $5 초과 | DAILY | 하루 예상 비용 ($48/22일 ≈ $2.2) 2배 초과 시 |
 | 월별 경보 | $60 초과 | MONTHLY | 월 예상 비용 초과 시 즉시 알림 |
 
-### AWS Budgets 선택 이유
+### 설계 변경 이력
 
-초기에는 `CloudWatch Billing Alarm → SNS(us-east-1) → Lambda(ap-northeast-2)` 구성을 시도했으나
-**크로스 리전 Lambda Permission 설정 문제**로 실패했습니다.
-AWS Budgets는 글로벌 서비스라 리전 문제가 없고, SNS와 Lambda를 동일 리전(ap-northeast-2)에서 구성할 수 있어 채택했습니다.
+**1차 시도: CloudWatch Billing Alarm → SNS(us-east-1) → Lambda(ap-northeast-2)**
+크로스 리전 Lambda Permission 설정 문제로 실패
+
+**2차 시도: AWS Budgets → SNS → Lambda**
+AWS Budgets DAILY 알람은 동일 상태(`ALARM`) 유지 시 재발송하지 않는 문제 발견.
+첫날만 알람이 발송되고 이후 매일 초과해도 알람이 오지 않음.
+
+**3차 (현재): EventBridge → Lambda → Cost Explorer API**
+매일 KST 09:00 EventBridge가 Lambda를 트리거하고,
+Cost Explorer API로 전일 실제 비용을 직접 조회하여 임계값 초과 시 Teams 발송.
+상태 개념이 없어 매일 무조건 체크하고 초과 시 알람 발송.
+
+EventBridge (cron: 매일 KST 09:00)
+↓
+Lambda (billing_alert.py)
+• Cost Explorer API로 전일 비용 조회
+• 일별 $5 초과 또는 월별 $60 초과 시
+↓
+Power Automate 웹훅 → Teams aws-billing 채널
+
+### Terraform 구성
 
 ```hcl
-# AWS Budgets - 일별 $5 초과
+# EventBridge 스케줄 (매일 KST 09:00)
+resource "aws_cloudwatch_event_rule" "billing_check" {
+  name                = "${var.project_name}-billing-daily-check"
+  description         = "매일 KST 09:00 비용 확인"
+  schedule_expression = "cron(0 0 * * ? *)"
+}
+
+# AWS Budgets (참고용, 알람 미사용)
 resource "aws_budgets_budget" "daily" {
   name         = "${var.project_name}-budget-daily"
   budget_type  = "COST"
   limit_amount = "5"
   limit_unit   = "USD"
   time_unit    = "DAILY"
-
-  notification {
-    comparison_operator       = "GREATER_THAN"
-    threshold                 = 100
-    threshold_type            = "PERCENTAGE"
-    notification_type         = "ACTUAL"
-    subscriber_sns_topic_arns = [aws_sns_topic.billing.arn]
-  }
 }
 ```
 

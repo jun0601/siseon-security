@@ -2,54 +2,23 @@ import json
 import urllib.request
 import urllib.error
 import os
+import boto3
 from datetime import datetime, timezone, timedelta
 
 WEBHOOK_URL = os.environ["TEAMS_WEBHOOK_URL"]
+DAILY_THRESHOLD = 5.0
+MONTHLY_THRESHOLD = 60.0
 KST = timezone(timedelta(hours=9))
 
-def lambda_handler(event, context):
-    for record in event.get("Records", []):
-        sns_message = json.loads(record["Sns"]["Message"])
+ce = boto3.client("ce", region_name="us-east-1")
 
-        alarm_name = sns_message.get("AlarmName", "")
-        new_state  = sns_message.get("NewStateValue", "")
-        reason     = sns_message.get("NewStateReason", "")
-        timestamp  = sns_message.get("StateChangeTime", "")
-
-        if new_state != "ALARM":
-            continue
-
-        # KST 변환
-        try:
-            event_time = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%f%z")
-            event_time_kst = event_time.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S KST")
-        except Exception:
-            try:
-                event_time = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
-                event_time_kst = event_time.replace(tzinfo=timezone.utc).astimezone(KST).strftime("%Y-%m-%d %H:%M:%S KST")
-            except Exception:
-                event_time_kst = timestamp
-
-        if "daily" in alarm_name.lower():
-            emoji       = "⚠️"
-            period_text = "일별"
-            threshold   = "$5"
-        else:
-            emoji       = "🚨"
-            period_text = "월별"
-            threshold   = "$60"
-
-        message = (
-            f"{emoji} AWS 비용 경보<br>"
-            f"📊 유형: {period_text} 예산 초과<br>"
-            f"💰 임계값: {threshold}<br>"
-            f"📋 사유: {reason}<br>"
-            f"⏰ 시간: {event_time_kst}"
-        )
-
-        send_to_teams(message)
-
-    return {"statusCode": 200, "body": "OK"}
+def get_cost(granularity, start, end):
+    response = ce.get_cost_and_usage(
+        TimePeriod={"Start": start, "End": end},
+        Granularity=granularity,
+        Metrics=["UnblendedCost"]
+    )
+    return float(response["ResultsByTime"][0]["Total"]["UnblendedCost"]["Amount"])
 
 def send_to_teams(message):
     data = json.dumps({"message": message}).encode("utf-8")
@@ -65,3 +34,47 @@ def send_to_teams(message):
     except urllib.error.URLError as e:
         print(f"Teams 전송 실패: {e.reason}")
         raise
+
+def lambda_handler(event, context):
+    now_kst = datetime.now(KST)
+    today = now_kst.date()
+    yesterday = today - timedelta(days=1)
+    month_start = today.replace(day=1)
+
+    # 일별 비용 (어제)
+    daily_cost = get_cost("DAILY", str(yesterday), str(today))
+    print(f"일별 비용 ({yesterday}): ${daily_cost:.2f}")
+
+    # 월별 비용 (이번달 누적)
+    monthly_cost = get_cost("MONTHLY", str(month_start), str(today))
+    print(f"월별 누적 비용 ({month_start} ~ {today}): ${monthly_cost:.2f}")
+
+    now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S KST")
+    alerted = False
+
+    if daily_cost > DAILY_THRESHOLD:
+        message = (
+            f"⚠️ AWS 비용 경보<br>"
+            f"📊 유형: 일별 예산 초과<br>"
+            f"📅 날짜: {yesterday}<br>"
+            f"💰 실제 비용: ${daily_cost:.2f} / 임계값: ${DAILY_THRESHOLD}<br>"
+            f"⏰ 시간: {now_str}"
+        )
+        send_to_teams(message)
+        alerted = True
+
+    if monthly_cost > MONTHLY_THRESHOLD:
+        message = (
+            f"🚨 AWS 비용 경보<br>"
+            f"📊 유형: 월별 예산 초과<br>"
+            f"📅 기간: {month_start} ~ {today}<br>"
+            f"💰 누적 비용: ${monthly_cost:.2f} / 임계값: ${MONTHLY_THRESHOLD}<br>"
+            f"⏰ 시간: {now_str}"
+        )
+        send_to_teams(message)
+        alerted = True
+
+    if not alerted:
+        print(f"정상 범위 - 일별: ${daily_cost:.2f}, 월별: ${monthly_cost:.2f}")
+
+    return {"statusCode": 200, "daily": daily_cost, "monthly": monthly_cost}

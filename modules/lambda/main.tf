@@ -179,16 +179,24 @@ resource "aws_iam_role_policy" "lambda_s3_read" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:GetObject",
-        "s3:ListBucket"
-      ]
-      Resource = [
-        "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b",
-        "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b/*"
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b",
+          "arn:aws:s3:::aws-cloudtrail-logs-448768137813-05d6a32b/*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ce:GetCostAndUsage"]
+        Resource = "*"
+      }
+    ]
   })
 }
+

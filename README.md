@@ -39,13 +39,11 @@ AWS 콘솔 이벤트 발생 (로그인 / 리소스 삭제)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-AWS Budgets (비용 모니터링)
-  일별 $5 / 월별 $60 임계값 초과
-            ↓
-        SNS 토픽
+EventBridge (매일 KST 09:00 스케줄)
             ↓
        Lambda 함수
-  (비용 경보 메시지 포맷)
+  (Cost Explorer API로 전일 비용 조회)
+  일별 $5 / 월별 $60 임계값 초과 시
             ↓
    Power Automate 웹훅 POST
             ↓
@@ -101,9 +99,9 @@ S3 (CloudTrail 로그)
 ```
 ⚠️ AWS 비용 경보
 📊 유형: 일별 예산 초과
-💰 임계값: $5
-📋 사유: 일별 비용 임계값 초과
-⏰ 시간: 2026-06-08 10:00:00 KST
+📅 날짜: 2026-06-09
+💰 실제 비용: $6.93 / 임계값: $5.0
+⏰ 확인 시간: 2026-06-10 09:00:00 KST
 ```
 
 ---
@@ -130,6 +128,9 @@ S3 (CloudTrail 로그)
 |------|--------|------|------|
 | 일별 경보 | $5 초과 | DAILY | 하루 8시간 기준 예상 비용 |
 | 월별 경보 | $60 초과 | MONTHLY | 월 176시간 기준 예상 비용 |
+
+> **비용 경보 방식**: AWS Budgets SNS 방식은 동일 상태 유지 시 재발송이 안 되는 문제로,
+> EventBridge(매일 KST 09:00) → Lambda → Cost Explorer API 방식으로 전환하여 매일 알람 발송.
 
 ---
 
@@ -234,6 +235,21 @@ CloudTrailLogs_CL
 
 ---
 
+## 🔐 멀티클라우드 SSO (Azure Entra ID → AWS SAML Federation)
+
+팀원 4명이 Azure Entra ID 계정으로 AWS 콘솔에 접근할 수 있도록 SAML Federation을 구성했습니다.
+
+| 항목 | 값 |
+|------|-----|
+| IdP | Microsoft Entra ID (siseoninfra.onmicrosoft.com) |
+| SP | AWS IAM (SAML Provider: AzureAD) |
+| IAM Role | AzureAD-SSORole |
+| 접근 방법 | https://myapps.microsoft.com → AWS IAM Identity Center 앱 |
+
+> Azure Free 플랜에서는 AWS→Azure 방향이 불가하여 Azure→AWS 방향으로 구성
+
+---
+
 ## 📦 S3 로그 장기 보관 정책
 
 | 기간 | 스토리지 클래스 | 비용 |
@@ -264,16 +280,16 @@ siseon-security/
     │   └── functions/
     │       ├── login_alert.py
     │       ├── delete_alert.py
-    │       ├── billing_alert.py
+    │       ├── billing_alert.py   # EventBridge + Cost Explorer 방식
     │       └── s3_to_azure.py     # 날짜 범위 파라미터 지원
     ├── cloudwatch/                # Metric Filter + Alarm
-    ├── billing/                   # AWS Budgets + SNS
+    ├── billing/                   # AWS Budgets + EventBridge 스케줄
     └── azure_monitor/             # Azure Monitor 페일오버 모니터링
-        ├── main.tf                # Log Analytics + Function App + Workbook
+        ├── main.tf
         ├── variables.tf
         ├── outputs.tf
         └── functions/
-            ├── function_app.py    # Blob 트리거 + Log Analytics 전송
+            ├── function_app.py
             ├── host.json
             ├── requirements.txt
             └── local.settings.json
@@ -286,11 +302,12 @@ siseon-security/
 | 분류 | 기술 |
 |------|------|
 | IaC | Terraform >= 1.0 (AWS + Azure 멀티클라우드) |
-| 클라우드 (주) | AWS (CloudTrail, CloudWatch, Lambda, S3, IAM, Budgets) |
-| 클라우드 (부) | Azure (Blob Storage, Function App, Log Analytics, Monitor Workbook) |
+| 클라우드 (주) | AWS (CloudTrail, CloudWatch, Lambda, S3, IAM, Budgets, Cost Explorer) |
+| 클라우드 (부) | Azure (Blob Storage, Function App, Log Analytics, Monitor Workbook, Entra ID) |
 | 런타임 | Python 3.12 (Lambda) / Python 3.11 (Azure Function) |
 | 알림 | Microsoft Teams + Power Automate |
-| 인증 | AWS IAM Identity Center (SSO) |
+| 인증 (AWS) | AWS IAM Identity Center (SSO) |
+| 인증 (멀티클라우드) | Azure Entra ID → AWS SAML Federation |
 | tfstate 관리 | S3 Remote Backend (`siseon-terraform-state`) |
 
 ---
@@ -308,35 +325,24 @@ siseon-security/
 ### 배포
 
 ```bash
-# 1. SSO 로그인
 aws sso login --profile siseon
-
-# 2. Azure 로그인
 az login
-
-# 3. 초기화
 terraform init
-
-# 4. 플랜 확인
 terraform plan
-
-# 5. 배포
 terraform apply -auto-approve
 
-# 6. Azure Function 코드 배포
+# Azure Function 코드 배포
 cd modules/azure_monitor/functions
 func azure functionapp publish siseon-blob-to-laws --python
 ```
 
-### Azure만 삭제
+### 삭제
 
 ```bash
+# Azure만 삭제
 terraform destroy -target module.azure_monitor -auto-approve
-```
 
-### 전체 삭제
-
-```bash
+# 전체 삭제
 terraform destroy -auto-approve
 ```
 
@@ -355,11 +361,11 @@ terraform destroy -auto-approve
 ## ⚠️ 주의사항
 
 - `terraform.tfvars` 는 웹훅 URL + Azure 연결 문자열 포함으로 **절대 커밋 금지** (`.gitignore` 처리됨)
-- 다른 PC에서 작업 시 `terraform.tfvars` 직접 생성 필요 (민감 변수 4개)
+- 다른 PC에서 작업 시 `terraform.tfvars` 직접 생성 필요
 - Azure Function 코드는 Terraform과 별도로 `func publish` 명령으로 배포
 - AWS CLI SSO 토큰 만료 시 `aws sso login --profile siseon` 재로그인 필요
 - Azure CLI 토큰 만료 시 `az login` 재로그인 필요
-- AWS Budgets는 월 2개까지 무료
+- AWS Budgets는 월 2개까지 무료 (알람 발송은 EventBridge + Cost Explorer 방식 사용)
 
 ## 📚 문서
 - [SECURITY.md](./SECURITY.md) - 보안 설계 문서

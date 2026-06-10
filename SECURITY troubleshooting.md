@@ -409,6 +409,31 @@ AWS → Azure 방향은 Azure가 SP가 되어야 하는데, 이 경우 Azure Pre
 멀티클라우드 SSO 구성 시 각 클라우드 플랜의 Federation 지원 범위를 사전에 확인해야 합니다.
 IdP/SP 방향에 따라 필요한 라이선스가 달라집니다.
 
+## 17. AWS Budgets DAILY 알람 재발송 안 됨
+
+### 증상
+매일 $5 이상 비용이 발생하는데 Teams 알람이 첫날 이후 오지 않았습니다.
+
+### 원인
+AWS Budgets DAILY 알람은 `ALARM` 상태가 되면 **동일 상태 유지 시 재발송하지 않습니다.**
+매일 지출이 리셋돼도 알람 상태는 유지되기 때문에 첫날만 발송됩니다.
+
+1일차: $6 발생 → OK → ALARM → 알람 발송 ✅
+2일차: $6 발생 → 이미 ALARM 상태 → 알람 없음 ❌
+3일차: $6 발생 → 이미 ALARM 상태 → 알람 없음 ❌
+
+### 해결
+**EventBridge + Cost Explorer API 방식**으로 전환했습니다.
+상태 개념 없이 매일 KST 09:00에 전일 비용을 직접 조회하여 임계값 초과 시 발송합니다.
+
+EventBridge (매일 KST 09:00)
+→ Lambda → Cost Explorer API로 전일 비용 조회
+→ $5 초과 시 Teams 발송
+
+### 교훈
+AWS Budgets 알람은 상태 기반이라 매일 재발송이 필요한 경우 적합하지 않습니다.
+주기적 비용 체크가 필요하면 EventBridge + Cost Explorer API 조합이 더 적합합니다.
+
 ## 📋 트러블슈팅 요약
 
 | # | 문제 | 원인 | 해결 |
@@ -429,3 +454,4 @@ IdP/SP 방향에 따라 필요한 라이선스가 달라집니다.
 | 14 | tfvars 노트북 누락 | .gitignore 처리된 파일 | 작업 PC마다 직접 생성 |
 | 15 | AWS Budgets SNS 발행 권한 누락 | SNS 토픽 정책에 budgets.amazonaws.com 미포함 | aws_sns_topic_policy 리소스 추가 |
 | 16 | Azure → AWS SAML Federation | Azure Free 플랜 Direct Federation 불가 | 방향 전환 (Azure IdP → AWS SP) |
+| 17 | AWS Budgets DAILY 알람 재발송 안 됨 | 동일 ALARM 상태 유지 시 재발송 없음 | EventBridge + Cost Explorer API 방식으로 전환 |
