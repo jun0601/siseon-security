@@ -206,6 +206,22 @@ data_json = jsonencode({
           ]
         }
         name = "error-events"
+      },
+      {
+        type = 3
+        content = {
+          version      = "KqlItem/1.0"
+          query        = "CloudTrailLogs_CL | summarize LastSync=max(TimeGenerated) | extend ['마지막 동기화 (KST)']=strcat(format_datetime(LastSync + 9h, 'yyyy-MM-dd HH:mm')) | project ['마지막 동기화 (KST)']"
+          size         = 0
+          title        = "🕐 마지막 동기화"
+          queryType    = 0
+          resourceType = "microsoft.operationalinsights/workspaces"
+          visualization = "table"
+          crossComponentResources = [
+            "/subscriptions/41ba8281-70ed-41df-979f-13eef4480f49/resourceGroups/siseon-rg/providers/Microsoft.OperationalInsights/workspaces/siseon-security-logs"
+          ]
+        }
+        name = "last-sync"
       }
     ]
     styleSettings = {}

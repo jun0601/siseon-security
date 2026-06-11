@@ -26,8 +26,8 @@
 │  90d → Glacier   │    └──────────┬───────────────────┘
 │  365d → 삭제      │               ↓
 │        ↓          │    ┌──────────────────────────────┐
-│  Lambda (매일)    │    │  Subscription Filter          │
-│  KST 02:00       │    │  (이벤트 패턴 실시간 매칭)      │
+│  Lambda (3회/일) │    │  Subscription Filter          │
+│  02/10/18 KST    │    │  (이벤트 패턴 실시간 매칭)      │
 └────────┬─────────┘    │  • ConsoleLogin               │
          ↓              │  • Delete* / Remove* /        │
 ┌──────────────────┐    │    Terminate*                 │
@@ -102,7 +102,7 @@ CloudTrail 로그를 Azure Blob Storage에 이중 백업합니다.
 ```
 S3 (CloudTrail 로그 원본)
         ↓
-Lambda (매일 KST 02:00 EventBridge 트리거)
+Lambda (하루 3회 KST 02:00/10:00/18:00 EventBridge 트리거)
   • 날짜 파라미터 있으면 해당 기간 동기화 (백필용)
   • 파라미터 없으면 오늘 날짜 기준 동기화 (크론 기본 동작)
         ↓
@@ -119,8 +119,12 @@ AWSLogs/448768137813/CloudTrail/ap-northeast-2/YYYY/MM/DD/
 | 소스 경로 | `AWSLogs/448768137813/CloudTrail/ap-northeast-2/` |
 | 대상 스토리지 | `siseonstorage` (Azure Blob, Korea Central) |
 | 대상 컨테이너 | `cloudtrail-backup` |
-| 실행 주기 | 매일 KST 02:00 (`cron(0 17 * * ? *)`) |
+| 실행 주기 | 하루 3회 KST 02:00/10:00/18:00 (`cron(0 1,9,17 * * ? *)`) |
 | Lambda 함수 | `siseon-lambda-s3-to-azure` |
+
+> **역할 분리 및 주기 개선**: 실시간 침해 대응은 CloudTrail → Teams 알림이 담당하고, Azure 백업은
+> AWS 장애 시 사후 감사·재해복구용으로 역할을 분리했다. 초기 하루 1회 동기화는 장애 직전 로그가
+> 누락되는 문제가 있어, 하루 3회로 개선하여 장애 시점과 백업 시점의 간격을 8시간 이내로 줄였다.
 
 ### Lambda 핵심 로직
 
@@ -188,12 +192,20 @@ Log Analytics Workspace (siseon-security-logs)
   • 테이블명: CloudTrailLogs_CL
   • 보존: 30일 (PerGB2018 SKU)
         ↓ KQL 쿼리
-Azure Monitor Workbook
-  • CloudTrail 이벤트 현황 Top 10 (바차트)
+Azure Monitor Workbook (보안 중심 재설계)
+  • 요약 타일 (총 이벤트 / 오류 / 콘솔 로그인 / 변경 작업)
+  • 콘솔 로그인 성공·실패 (파이차트)
+  • 위험 작업 Top — Delete/Terminate/Remove/Stop (바차트)
+  • 변경 작업 Top — 조회성(Describe/Get/List) 제외 (바차트)
+  • 외부 IP 접근 Top — AWS 서비스 도메인 제외 (바차트)
   • 오류 발생 이벤트 (테이블)
-  • 소스 IP별 접근 현황 (파이차트)
-  • 시간대별 이벤트 추이 (타임차트)
+  • 마지막 동기화 시각 (데이터 신선도)
 ```
+
+> **설계 의도**: 초기에는 전체 이벤트를 그대로 노출했으나 Decrypt/Describe 등 조회성 API가
+> 상위를 차지해 보안적 의미가 없었다. 조회성 노이즈를 걷어내고 변경·인증·외부 접근 등
+> 보안 담당자가 실제로 봐야 할 지표 중심으로 재설계했다. (원본 로그는 Log Analytics에 보존되어
+> 필요 시 전체 쿼리 가능)
 
 ### Terraform 멀티클라우드 통합 관리
 
@@ -251,17 +263,27 @@ func azure functionapp publish siseon-blob-to-laws --python
 ### KQL 쿼리 예시
 
 ```kusto
-// 이벤트 현황 Top 10
+// 변경 작업 Top (조회성 제외 — 보안 의미 있는 이벤트만)
 CloudTrailLogs_CL
 | where TimeGenerated > ago(24h)
+| where EventName_s startswith "Delete" or EventName_s startswith "Create"
+     or EventName_s startswith "Modify" or EventName_s startswith "Put"
 | summarize Count=count() by EventName_s
 | order by Count desc | take 10
 
-// 오류 발생 이벤트
+// 콘솔 로그인 성공/실패
 CloudTrailLogs_CL
-| where isnotempty(ErrorCode_s)
-| project TimeGenerated, EventName_s, ErrorCode_s, SourceIPAddress_s
-| order by TimeGenerated desc
+| where TimeGenerated > ago(24h)
+| where EventName_s == "ConsoleLogin"
+| extend Result = tostring(parse_json(ResponseElements_s).ConsoleLogin)
+| summarize Count=count() by Result
+
+// 외부 IP 접근 (AWS 서비스 도메인 제외)
+CloudTrailLogs_CL
+| where TimeGenerated > ago(24h)
+| where SourceIPAddress_s !endswith ".amazonaws.com"
+| summarize Count=count() by SourceIPAddress_s
+| order by Count desc | take 10
 ```
 
 ### Azure Blob RBAC
@@ -527,7 +549,7 @@ terraform {
 | `aws_lambda_function` | 로그인/삭제/비용/S3동기화 함수 4개 |
 | `aws_lambda_permission` | CloudWatch Logs / SNS / EventBridge 트리거 권한 |
 | `aws_cloudwatch_log_subscription_filter` | 이벤트 패턴 필터 + Lambda 연결 |
-| `aws_cloudwatch_event_rule` | EventBridge 스케줄 (매일 KST 02:00) |
+| `aws_cloudwatch_event_rule` | EventBridge 스케줄 (비용 09:00 / S3동기화 02·10·18시 KST) |
 | `aws_iam_role_policy` | S3 읽기 권한 (CloudTrail 버킷) |
 
 ### cloudwatch 모듈

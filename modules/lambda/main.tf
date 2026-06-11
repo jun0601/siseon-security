@@ -156,7 +156,7 @@ resource "aws_lambda_function" "s3_to_azure" {
 resource "aws_cloudwatch_event_rule" "s3_to_azure_schedule" {
   name                = "${var.project_name}-s3-to-azure-schedule"
   description         = "매일 새벽 2시 S3 → Azure Blob 동기화"
-  schedule_expression = "cron(0 17 * * ? *)"
+  schedule_expression = "cron(0 1,9,17 * * ? *)"
 }
 
 resource "aws_cloudwatch_event_target" "s3_to_azure" {
