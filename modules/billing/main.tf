@@ -31,7 +31,7 @@ resource "aws_lambda_permission" "billing_eventbridge" {
 resource "aws_budgets_budget" "daily" {
   name         = "${var.project_name}-budget-daily"
   budget_type  = "COST"
-  limit_amount = "5"
+  limit_amount = "8"
   limit_unit   = "USD"
   time_unit    = "DAILY"
 }
@@ -39,7 +39,7 @@ resource "aws_budgets_budget" "daily" {
 resource "aws_budgets_budget" "monthly" {
   name         = "${var.project_name}-budget-monthly"
   budget_type  = "COST"
-  limit_amount = "60"
+  limit_amount = "120.0"
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 }

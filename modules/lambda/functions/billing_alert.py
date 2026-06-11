@@ -6,8 +6,8 @@ import boto3
 from datetime import datetime, timezone, timedelta
 
 WEBHOOK_URL = os.environ["TEAMS_WEBHOOK_URL"]
-DAILY_THRESHOLD = 5.0
-MONTHLY_THRESHOLD = 60.0
+DAILY_THRESHOLD = 8.0
+MONTHLY_THRESHOLD = 120.0
 KST = timezone(timedelta(hours=9))
 
 ce = boto3.client("ce", region_name="us-east-1")
